@@ -31,7 +31,7 @@ import os
 from pathlib import Path
 
 LOG_DIR = Path(os.environ.get("JEV_LOOP_HOME", str(Path.home() / ".jev-loop")))
-LOG_FILE = LOG_DIR / "log.jsonl"
+LOG_FILE = LOG_DIR / f"{os.environ.get('DEFAULT_SYMBOL', 'BTC/USD').replace('/', '_')}.log.jsonl"
 
 # Alpaca crypto, lowest volume tier: 0.25% taker each way.
 # https://docs.alpaca.markets/docs/crypto-fees

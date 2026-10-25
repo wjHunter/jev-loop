@@ -74,6 +74,17 @@ from .state import InventoryState, build_snapshot, record_fill_slippage, update_
 LOG_DIR = Path(os.environ.get("JEV_LOOP_HOME", str(Path.home() / ".jev-loop")))
 LOG_FILE = LOG_DIR / "log.jsonl"
 LATEST_FILE = LOG_DIR / "latest.json"
+
+
+def safe_symbol(symbol: str) -> str:
+    """Filesystem-safe symbol: BTC/USD -> BTC_USD."""
+    return symbol.replace("/", "_")
+
+
+def artifact_paths(symbol: str) -> tuple[Path, Path]:
+    """Per-symbol log.jsonl / latest.json so parallel loops don't collide."""
+    safe = safe_symbol(symbol)
+    return LOG_DIR / f"{safe}.log.jsonl", LOG_DIR / f"{safe}.latest.json"
 LATEST_WINDOW = 120
 
 
@@ -1080,6 +1091,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         except EOFError:
             confirmation = None
+
+    global LOG_FILE, LATEST_FILE
+    LOG_FILE, LATEST_FILE = artifact_paths(args.symbol)
+    print(f"artifacts: {LOG_FILE} , {LATEST_FILE}")
 
     limits = Limits()
     return run(

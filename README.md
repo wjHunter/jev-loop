@@ -51,9 +51,30 @@ kill "$(cat ~/.jev-loop/continuous.pid)"
 Every exit cancels open orders: a bounded run finishing, Ctrl+C, `kill`,
 a KILL, or a crash. (On Windows, `kill` from outside may skip the clean
 shutdown; a bounded `--ticks N` run always exits cleanly.) One tick is 2s,
-so an hour is `--ticks 1800`, about 63 minutes of wall time. The dashboard (`jevloop
-serve`) keeps reading the same `~/.jev-loop/latest.json` regardless of
-whether the run is bounded or continuous.
+so an hour is `--ticks 1800`, about 63 minutes of wall time.
+
+Each run writes per-symbol artifacts: `~/.jev-loop/<SAFE>.log.jsonl` and
+`~/.jev-loop/<SAFE>.latest.json`, where SAFE is the symbol with `/`
+replaced by `_` (BTC/USD -> BTC_USD). The dashboard serves one symbol:
+`jevloop serve --symbol BTC/USD` (default `DEFAULT_SYMBOL` or BTC/USD).
+
+Order cancels are scoped to the run's own symbol (open orders are listed
+with a symbol filter and cancelled by id), so several loops can share one
+paper account without wiping each other's resting orders.
+
+### Several symbols at once
+
+One process per symbol. `nohup` does not load `.env`, so source it first:
+
+```bash
+for SYM in BTC/USD ETH/USD SOL/USD AVAX/USD LINK/USD DOGE/USD SPY QQQ IWM; do
+  SAFE="${SYM//\//_}"
+  (set -a; . ./.env; set +a
+   nohup uv run python -m jevloop run --paper --forever --symbol "$SYM" \
+     >> ~/.jev-loop/${SAFE}.log 2>&1 & echo $! > ~/.jev-loop/${SAFE}.pid)
+done
+# stop one: kill "$(cat ~/.jev-loop/BTC_USD.pid)"
+```
 
 ## Your strategy lives in strategy.py
 

@@ -479,3 +479,32 @@ def test_run_kills_and_flattens_an_oversized_broker_position(wired):
     assert fake.limit_orders == []  # no new orders once the breach is seen
     last = (loop.LOG_FILE).read_text().strip().splitlines()
     assert len(last) == 1  # stopped on the first tick
+
+
+def test_cancel_all_orders_is_scoped_to_symbol(monkeypatch):
+    client = AlpacaPaperClient.__new__(AlpacaPaperClient)
+    client.symbol = "BTC/USD"
+    client.base_url = "https://paper"
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        if method == "GET":
+            return [
+                {"id": "a", "symbol": "BTC/USD"},
+                {"id": "b", "symbol": "ETH/USD"},
+                {"id": "c", "symbol": "BTCUSD"},
+            ]
+        return {}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    client.cancel_all_orders()
+    deletes = [u for m, u, _ in calls if m == "DELETE"]
+    assert deletes == ["https://paper/v2/orders/a", "https://paper/v2/orders/c"]
+    assert all(not u.endswith("/v2/orders") for u in deletes)
+
+
+def test_artifact_paths_are_per_symbol():
+    log, latest = loop.artifact_paths("BTC/USD")
+    assert log.name == "BTC_USD.log.jsonl" and latest.name == "BTC_USD.latest.json"
+    assert loop.artifact_paths("SPY")[0].name == "SPY.log.jsonl"
