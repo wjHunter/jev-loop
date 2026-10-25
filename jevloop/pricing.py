@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import math
 
+# Never quote more than this fraction of mid away from the reservation price.
+MAX_HALF_SPREAD_FRAC = 0.05
+
 
 def reservation_price(
     mid: float,
@@ -44,7 +47,16 @@ def quote_prices(
     kappa: float,
     time_left_s: float,
 ) -> tuple[float, float]:
-    """Convenience wrapper: returns (bid, ask) around the reservation price."""
+    """Convenience wrapper: returns (bid, ask) around the reservation price.
+
+    The A-S terms are in absolute dollars (the liquidity term alone is ~$1.29
+    at the default gamma/kappa), which is negligible for BTC but larger than
+    the whole price of a sub-dollar asset like DOGE, driving the bid <= 0.
+    Cap the half spread at a fraction of mid so quotes stay positive and
+    sane for low-priced assets; higher-priced assets are unaffected.
+    """
     r = reservation_price(mid, inventory, gamma, sigma, time_left_s)
     h = half_spread(gamma, sigma, time_left_s, kappa)
+    if mid > 0:
+        h = min(h, mid * MAX_HALF_SPREAD_FRAC)
     return r - h, r + h

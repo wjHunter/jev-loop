@@ -77,3 +77,16 @@ def test_size_order_rejects_non_positive_price():
     spec = resolve_symbol("BTC/USD")
     with pytest.raises(ValueError):
         size_order(notional_usd=20.0, price=0.0, spec=spec)
+
+
+def test_low_priced_asset_quotes_stay_positive_and_size():
+    from jevloop.assets import resolve_symbol, size_order
+    from jevloop.pricing import quote_prices
+
+    spec = resolve_symbol("DOGE/USD")
+    bid, ask = quote_prices(
+        mid=0.18, inventory=0.0, sigma=0.001, gamma=0.10, kappa=1.5, time_left_s=60.0
+    )
+    assert 0 < bid < 0.18 < ask
+    qty = size_order(10.0, bid, spec)
+    assert qty * bid >= spec.min_notional_usd
