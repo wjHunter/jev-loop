@@ -19,11 +19,14 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 DASHBOARD_DIR = SKILL_DIR / "dashboard"
 
 
+FILES = {"/latest.json": "latest.json", "/log.jsonl": "log.jsonl"}
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def translate_path(self, path: str) -> str:
         path = path.split("?", 1)[0].split("#", 1)[0]
         if path in ("/latest.json", "/log.jsonl"):
-            return str(LOG_DIR / path.lstrip("/"))
+            return str(LOG_DIR / FILES[path])
         if path == "/":
             path = "/index.html"
         candidate = DASHBOARD_DIR / path.lstrip("/")
@@ -44,10 +47,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="jev-loop serve")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--symbol",
+        default=os.environ.get("DEFAULT_SYMBOL", "BTC/USD"),
+        help="which symbol's per-symbol artifacts to serve (BTC/USD -> BTC_USD.latest.json)",
+    )
     args = parser.parse_args(argv)
+    safe = args.symbol.replace("/", "_")
+    FILES["/latest.json"] = f"{safe}.latest.json"
+    FILES["/log.jsonl"] = f"{safe}.log.jsonl"
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    latest = LOG_DIR / "latest.json"
+    latest = LOG_DIR / FILES["/latest.json"]
     if not latest.exists():
         latest.write_text('{"ticks": [], "stats": {}}')
 

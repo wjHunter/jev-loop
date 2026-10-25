@@ -301,7 +301,29 @@ class AlpacaPaperClient:
         self._request("DELETE", f"{self.base_url}/v2/orders/{order_id}")
 
     def cancel_all_orders(self) -> None:
-        self._request("DELETE", f"{self.base_url}/v2/orders")
+        """Cancel open orders for THIS symbol only.
+
+        A bare DELETE /v2/orders cancels every open order on the account,
+        which lets one forever-loop wipe out another symbol's resting
+        orders on a shared paper account. List this symbol's open orders
+        and cancel them one by one instead.
+        """
+        want = self.symbol.replace("/", "").upper()
+        orders = self._request(
+            "GET",
+            f"{self.base_url}/v2/orders",
+            params={"status": "open", "symbols": self.symbol, "limit": 500},
+        ) or []
+        for order in orders:
+            sym = str(order.get("symbol", "")).replace("/", "").upper()
+            if sym != want or not order.get("id"):
+                continue
+            try:
+                self.cancel_order(order["id"])
+            except AlpacaAPIError as exc:
+                # 404/422: already filled or cancelled in the meantime.
+                if exc.status_code not in (404, 422):
+                    raise
 
     # -- market data -----------------------------------------------
     def get_orderbook(self) -> dict:
