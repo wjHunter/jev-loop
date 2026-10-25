@@ -53,7 +53,7 @@ class Limits:
     # "block" = one tick of this loop. Each tick makes ~4 Alpaca calls
     # (2 market data, ~2 trading), so 2s ticks need ~120 calls/min: see the
     # cap below. At a 90 cap, 2s ticks ran 29% late; 3s ticks fit.
-    tick_seconds: float = 2.0
+    tick_seconds: float = 12.0
     rest_ticks: int = 3  # rest a resting quote this many ticks before cancel-replace
     quote_notional_usd: float = 20.0  # dollar target for each side of a quote
     directional_notional_usd: float = (
@@ -63,4 +63,4 @@ class Limits:
     # trading and market data APIs (both return X-Ratelimit-Limit: 200, and
     # one call to each left 199 remaining on each). This one limiter covers
     # both combined, so 150 stays under 200 even if every call hit one API.
-    max_alpaca_calls_per_minute: int = 150
+    max_alpaca_calls_per_minute: int = 20
