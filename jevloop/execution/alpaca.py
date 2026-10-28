@@ -282,7 +282,9 @@ class AlpacaPaperClient:
                 f"{self.symbol} market is closed, refusing to submit an order"
             )
         # Enforce minimum notional before submitting
-        notional = qty * limit_price
+        # Use the exact values sent to Alpaca (qty precision, 2dp price) so
+        # rounding can't push a just-over-$10 order under the venue floor.
+        notional = float(self._qty_str(qty)) * float(f"{limit_price:.2f}")
         if notional < self.spec.min_notional_usd:
             raise AlpacaAPIError(
                 422,
