@@ -281,6 +281,14 @@ class AlpacaPaperClient:
             raise MarketClosedError(
                 f"{self.symbol} market is closed, refusing to submit an order"
             )
+        # Enforce minimum notional before submitting
+        notional = qty * limit_price
+        if notional < self.spec.min_notional_usd:
+            raise AlpacaAPIError(
+                422,
+                f"order notional ${notional:.2f} is below minimum ${self.spec.min_notional_usd:.2f} "
+                f"for {self.symbol} ({qty} @ {limit_price}). Refusing to submit."
+            )
         # Alpaca requires fractional equity orders to use time_in_force=day.
         # Whole-share equity orders can use gtc, crypto uses gtc.
         final_tif = tif
@@ -303,6 +311,29 @@ class AlpacaPaperClient:
             raise MarketClosedError(
                 f"{self.symbol} market is closed, refusing to submit an order"
             )
+        # Enforce minimum notional before submitting.
+        # For market orders we don't know the exact fill price, but we can check
+        # against the current best bid/ask as a proxy.
+        est_price = None
+        try:
+            quote = self.get_latest_quote()
+            # Use bid for sells (pessimistic), ask for buys (pessimistic)
+            est_price = float(quote.get("bp" if side == "sell" else "ap", 0))
+        except Exception:
+            # If we can't get the quote for some reason, we'll skip the check
+            # and let Alpaca validate. This is just a best-effort guard.
+            pass
+        
+        if est_price and est_price > 0:
+            notional = qty * est_price
+            if notional < self.spec.min_notional_usd:
+                raise AlpacaAPIError(
+                    422,
+                    f"order notional ${notional:.2f} (estimated) is below minimum "
+                    f"${self.spec.min_notional_usd:.2f} for {self.symbol} "
+                    f"({qty} @ ~{est_price}). Refusing to submit."
+                )
+        
         body = {
             "symbol": self.symbol,
             "qty": self._qty_str(qty),

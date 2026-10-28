@@ -75,7 +75,8 @@ def test_crypto_never_checks_market_hours():
     crypto_client.is_market_open = _boom
     crypto_client._request = lambda method, url, **kwargs: {"id": "fake-order"}
 
-    result = crypto_client.submit_limit_order("buy", 0.001, 100.0)
+    # Use an order that meets the minimum notional ($10)
+    result = crypto_client.submit_limit_order("buy", 0.001, 100000.0)  # $100
     assert result == {"id": "fake-order"}
 
 
@@ -255,3 +256,91 @@ def test_request_does_not_retry_permanent_errors():
         client._request("GET", "https://example.com/test")
     assert exc_info.value.status_code == 422
     assert attempts[0] == 1  # No retries for 4xx errors
+
+
+# -- minimum notional enforcement --
+
+
+def test_limit_order_below_min_notional_is_rejected():
+    """Orders below min_notional_usd are rejected before submission."""
+    crypto_client = AlpacaPaperClient(api_key="x", secret_key="y", spec=BTC_SPEC)
+    
+    # Try to submit a $5 order (below $10 minimum for crypto)
+    from jevloop.execution.alpaca import AlpacaAPIError
+    with pytest.raises(AlpacaAPIError) as exc_info:
+        crypto_client.submit_limit_order("buy", 0.00005, 100000.0)  # $5
+    assert "below minimum" in str(exc_info.value)
+    assert "$5.00" in str(exc_info.value)
+
+
+def test_limit_order_above_min_notional_is_accepted():
+    """Orders at or above min_notional_usd are accepted."""
+    crypto_client = AlpacaPaperClient(api_key="x", secret_key="y", spec=BTC_SPEC)
+    crypto_client._request = lambda method, url, **kwargs: {"id": "test-order"}
+    
+    # $10 exactly (at minimum)
+    result = crypto_client.submit_limit_order("buy", 0.0001, 100000.0)
+    assert result == {"id": "test-order"}
+    
+    # $20 (well above minimum)
+    result = crypto_client.submit_limit_order("buy", 0.0002, 100000.0)
+    assert result == {"id": "test-order"}
+
+
+def test_market_order_below_min_notional_is_rejected():
+    """Market orders below min_notional_usd are rejected before submission."""
+    crypto_client = AlpacaPaperClient(api_key="x", secret_key="y", spec=BTC_SPEC)
+    
+    # Mock _request to return quote data
+    def mock_request(method, url, **kwargs):
+        if "latest/quotes" in url:
+            return {"quotes": {"BTC/USD": {"ap": 100000.0, "bp": 99900.0}}}
+        return {"id": "test-order"}
+    
+    crypto_client._request = mock_request
+    crypto_client._limiter.wait = lambda: None
+    
+    # Try to submit a $5 buy (below $10 minimum)
+    from jevloop.execution.alpaca import AlpacaAPIError
+    with pytest.raises(AlpacaAPIError) as exc_info:
+        crypto_client.submit_market_order("buy", 0.00005)  # ~$5 at $100k
+    assert "below minimum" in str(exc_info.value)
+
+
+def test_market_order_above_min_notional_is_accepted():
+    """Market orders at or above min_notional_usd are accepted."""
+    crypto_client = AlpacaPaperClient(api_key="x", secret_key="y", spec=BTC_SPEC)
+    
+    def mock_request(method, url, **kwargs):
+        if "latest/quotes" in url:
+            return {"quotes": {"BTC/USD": {"ap": 100000.0, "bp": 99900.0}}}
+        return {"id": "test-order"}
+    
+    crypto_client._request = mock_request
+    crypto_client._limiter.wait = lambda: None
+    
+    # $10+ buy
+    result = crypto_client.submit_market_order("buy", 0.00011)  # ~$11 at $100k ask
+    assert result == {"id": "test-order"}
+    
+    # $10+ sell
+    result = crypto_client.submit_market_order("sell", 0.00011)  # ~$10.99 at $99.9k bid
+    assert result == {"id": "test-order"}
+
+
+def test_equity_min_notional_check():
+    """Equity orders also enforce min_notional ($1 for equities)."""
+    equity_spec = resolve_symbol("SPY")
+    client = AlpacaPaperClient(api_key="x", secret_key="y", spec=equity_spec)
+    client.is_market_open = lambda: True
+    
+    # Try to submit a $0.50 order (below $1 minimum for equity)
+    from jevloop.execution.alpaca import AlpacaAPIError
+    with pytest.raises(AlpacaAPIError) as exc_info:
+        client.submit_limit_order("buy", 0.001, 450.0)  # $0.45
+    assert "below minimum" in str(exc_info.value)
+    
+    # $1.00+ should work
+    client._request = lambda method, url, **kwargs: {"id": "test-order"}
+    result = client.submit_limit_order("buy", 0.003, 450.0)  # $1.35
+    assert result == {"id": "test-order"}
