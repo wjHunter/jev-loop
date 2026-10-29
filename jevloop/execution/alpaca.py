@@ -192,20 +192,57 @@ class AlpacaPaperClient:
     # -- low-level HTTP -----------------------------------------------
     def _request(self, method: str, url: str, **kwargs) -> dict:
         self._limiter.wait()
-        resp = self._session.request(method, url, timeout=10, **kwargs)
-        if resp.status_code == 401:
-            raise AlpacaAPIError(
-                401,
-                "unauthorized. The key in your .env is either wrong or was copied from the LIVE "
-                "dashboard instead of the PAPER dashboard. Generate a new key at "
-                "https://app.alpaca.markets/paper/dashboard/overview (look for 'Generate New Keys' "
-                "under Your API Keys) and update ALPACA_API_KEY / ALPACA_SECRET_KEY.",
-            )
-        if resp.status_code >= 400:
-            raise AlpacaAPIError(resp.status_code, resp.text)
-        if resp.text:
-            return resp.json()
-        return {}
+        
+        # Retry logic for transient failures (timeouts, connection errors, 5xx, 429)
+        max_retries = 3
+        backoff_seconds = [1.0, 2.0, 4.0]
+        
+        for attempt in range(max_retries + 1):
+            try:
+                resp = self._session.request(method, url, timeout=10, **kwargs)
+                
+                # Auth errors are permanent - don't retry
+                if resp.status_code == 401:
+                    raise AlpacaAPIError(
+                        401,
+                        "unauthorized. The key in your .env is either wrong or was copied from the LIVE "
+                        "dashboard instead of the PAPER dashboard. Generate a new key at "
+                        "https://app.alpaca.markets/paper/dashboard/overview (look for 'Generate New Keys' "
+                        "under Your API Keys) and update ALPACA_API_KEY / ALPACA_SECRET_KEY.",
+                    )
+                
+                # 4xx errors (except 429) are permanent - don't retry
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    raise AlpacaAPIError(resp.status_code, resp.text)
+                
+                # 5xx errors and 429 (rate limit) are transient - retry with backoff
+                if resp.status_code >= 500 or resp.status_code == 429:
+                    if attempt < max_retries:
+                        wait = backoff_seconds[attempt]
+                        print(f"Alpaca API returned {resp.status_code}, retrying in {wait}s (attempt {attempt + 1}/{max_retries + 1})")
+                        time.sleep(wait)
+                        continue
+                    # Final attempt failed
+                    raise AlpacaAPIError(resp.status_code, resp.text)
+                
+                # Success
+                if resp.text:
+                    return resp.json()
+                return {}
+                
+            except (
+                requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.RequestException,
+            ) as exc:
+                # Transient network errors - retry with backoff
+                if attempt < max_retries:
+                    wait = backoff_seconds[attempt]
+                    print(f"Alpaca API request failed ({type(exc).__name__}: {exc}), retrying in {wait}s (attempt {attempt + 1}/{max_retries + 1})")
+                    time.sleep(wait)
+                    continue
+                # Final attempt failed - raise as AlpacaAPIError
+                raise AlpacaAPIError(0, f"Network error after {max_retries + 1} attempts: {type(exc).__name__}: {exc}")
 
     # -- account / orders -----------------------------------------------
     def get_account(self) -> dict:
@@ -244,12 +281,29 @@ class AlpacaPaperClient:
             raise MarketClosedError(
                 f"{self.symbol} market is closed, refusing to submit an order"
             )
+        # Enforce minimum notional before submitting
+        # Use the exact values sent to Alpaca (qty precision, 2dp price) so
+        # rounding can't push a just-over-$10 order under the venue floor.
+        notional = float(self._qty_str(qty)) * float(f"{limit_price:.2f}")
+        if notional < self.spec.min_notional_usd:
+            raise AlpacaAPIError(
+                422,
+                f"order notional ${notional:.2f} is below minimum ${self.spec.min_notional_usd:.2f} "
+                f"for {self.symbol} ({qty} @ {limit_price}). Refusing to submit."
+            )
+        # Alpaca requires fractional equity orders to use time_in_force=day.
+        # Whole-share equity orders can use gtc, crypto uses gtc.
+        final_tif = tif
+        if self.spec.asset_class == "us_equity":
+            # Check if this is a fractional order (has decimal places beyond what whole shares need)
+            if qty != int(qty):
+                final_tif = "day"
         body = {
             "symbol": self.symbol,
             "qty": self._qty_str(qty),
             "side": side,
             "type": "limit",
-            "time_in_force": tif,
+            "time_in_force": final_tif,
             "limit_price": f"{limit_price:.2f}",
         }
         return self._request("POST", f"{self.base_url}/v2/orders", json=body)
@@ -259,6 +313,29 @@ class AlpacaPaperClient:
             raise MarketClosedError(
                 f"{self.symbol} market is closed, refusing to submit an order"
             )
+        # Enforce minimum notional before submitting.
+        # For market orders we don't know the exact fill price, but we can check
+        # against the current best bid/ask as a proxy.
+        est_price = None
+        try:
+            quote = self.get_latest_quote()
+            # Use bid for sells (pessimistic), ask for buys (pessimistic)
+            est_price = float(quote.get("bp" if side == "sell" else "ap", 0))
+        except Exception:
+            # If we can't get the quote for some reason, we'll skip the check
+            # and let Alpaca validate. This is just a best-effort guard.
+            pass
+        
+        if est_price and est_price > 0:
+            notional = qty * est_price
+            if notional < self.spec.min_notional_usd:
+                raise AlpacaAPIError(
+                    422,
+                    f"order notional ${notional:.2f} (estimated) is below minimum "
+                    f"${self.spec.min_notional_usd:.2f} for {self.symbol} "
+                    f"({qty} @ ~{est_price}). Refusing to submit."
+                )
+        
         body = {
             "symbol": self.symbol,
             "qty": self._qty_str(qty),
